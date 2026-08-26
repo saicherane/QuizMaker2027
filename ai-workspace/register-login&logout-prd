@@ -1,0 +1,924 @@
+Date created: 2026-08-26
+Date last modified: 2026-08-26 (TDD testing plan added)
+
+# User Registration, Login, Logout & User Management - Technical PRD
+
+## Overview/Problem
+
+QuizMaker is a greenfield collaborative test-bank platform where multiple teachers share and manage multiple-choice questions. Today the application has no identity layer—any visitor sees the default landing page and there is no way to create an account, authenticate, or associate actions with a specific teacher. Without registration, login, logout, and user management, the platform cannot enforce access control, audit who created or edited content, or safely gate future test-bank features. This phase establishes the foundational authentication and user-management layer that all subsequent features depend on.
+
+---
+
+## Hypothesis
+
+We believe that providing secure teacher registration, login, logout, and self-service profile management through a layered architecture will enable trusted multi-teacher collaboration on shared test banks while keeping the codebase clean and extensible for future MCQ features.
+
+---
+
+## Scope
+
+### In Scope
+
+What will be built in this feature:
+
+- **Users table** in Cloudflare D1 storing `user_id`, `username`, `email_id`, and a hashed password (never stored in plain text), plus audit timestamps
+- **Layered backend architecture**: Controller (Server Actions / route handlers) → Service (`UserService`) → Repository (`UserRepository`) → Database (D1)
+- **User registration** with username, email, password, and password confirmation
+- **User login** with email (or username) and password; issue a secure HTTP-only session cookie on success
+- **User logout** that invalidates the session server-side and clears the cookie
+- **User retrieval** for the authenticated user (profile view) and by ID within service/repository layers
+- **User update** for the authenticated user (username, email, optional password change)
+- **User delete** for the authenticated user (account deletion with confirmation)
+- **Route protection** so unauthenticated users are redirected to login; authenticated users are redirected away from login/register
+- **Input validation** with Zod on all Server Actions
+- **UI pages** for register, login, profile/settings, and logout affordance in the app shell
+- **D1 migration** for the `users` table and a `sessions` table for server-side session storage
+- **Test-driven development (TDD)** with **Vitest** — unit tests written before or alongside each layer; failing tests (red) drive implementation until green
+
+### Out of Scope
+
+What is explicitly not being built now but may be considered later:
+
+- OAuth / social login (Google, Microsoft, etc.)
+- Email verification and password-reset flows
+- Role-based access control (admin vs teacher vs viewer)
+- Multi-factor authentication (MFA)
+- Test-bank, question, or collaboration features
+- Admin panel to manage other users' accounts
+- Rate limiting and CAPTCHA (Turnstile) — recommended before production but not in this phase
+- Audit log of login attempts
+
+### Cut
+
+Things that were considered during planning but deliberately removed (and why):
+
+- **JWT-only stateless auth** — Server-side sessions in D1 are simpler to revoke on logout and align with the explicit logout requirement; JWT refresh complexity is unnecessary for phase 1
+- **API-first REST-only design** — Next.js Server Actions are the primary mutation path per project conventions; route handlers are reserved for future external consumers
+- **Storing passwords as specified in plain text** — Security requirement; only password hashes with per-user salt are persisted
+- **Username-only login** — Email is the primary login identifier; username lookup can be added in the repository if needed, but email is the canonical credential key
+
+---
+
+## Technical Requirements
+
+### Database Schema
+
+Two tables are required: `users` for identity and `sessions` for authenticated sessions.
+
+```sql
+-- Migration: 0001_create_users_and_sessions.sql
+
+CREATE TABLE users (
+  user_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  username TEXT NOT NULL COLLATE NOCASE,
+  email_id TEXT NOT NULL COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  password_salt TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX idx_users_username ON users (username);
+CREATE UNIQUE INDEX idx_users_email_id ON users (email_id);
+
+CREATE TABLE sessions (
+  session_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  user_id TEXT NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_sessions_user_id ON sessions (user_id);
+CREATE INDEX idx_sessions_expires_at ON sessions (expires_at);
+```
+
+**Column mapping (domain → database):**
+
+| Domain field | DB column      | Notes                                      |
+|--------------|----------------|--------------------------------------------|
+| UserId       | `user_id`      | TEXT UUID-style hex string, primary key    |
+| Username     | `username`     | Unique, case-insensitive                   |
+| EmailId      | `email_id`     | Unique, case-insensitive, login identifier |
+| Password     | `password_hash`| PBKDF2 hash; never store plain password    |
+| —            | `password_salt`| Random salt per user                       |
+
+**D1 setup (one-time, before implementation):**
+
+1. `npx wrangler d1 create quizmaker-db`
+2. Add `d1_databases` binding `DB` to `wrangler.jsonc`
+3. `npm run cf-typegen`
+4. `npx wrangler d1 migrations create quizmaker-db create_users_and_sessions`
+5. Apply locally only: `npx wrangler d1 migrations apply quizmaker-db --local`
+
+### API Endpoints
+
+Primary mutations use **Server Actions**. Optional route handlers are listed for completeness and future API consumers.
+
+#### Server Actions (primary)
+
+| Action            | File                              | Input                                              | Success result                    | Errors                          |
+|-------------------|-----------------------------------|----------------------------------------------------|-----------------------------------|---------------------------------|
+| `registerUser`    | `src/app/(auth)/register/actions.ts` | `{ username, emailId, password, confirmPassword }` | Redirect to `/login?registered=1` | 400 validation; 409 duplicate   |
+| `loginUser`       | `src/app/(auth)/login/actions.ts`    | `{ emailId, password }`                            | Set session cookie; redirect `/`  | 401 invalid credentials         |
+| `logoutUser`      | `src/lib/actions/auth-actions.ts`    | (none; reads cookie)                               | Clear cookie; redirect `/login`   | —                               |
+| `updateUser`      | `src/app/(app)/profile/actions.ts`   | `{ username?, emailId?, currentPassword?, newPassword?, confirmPassword? }` | Updated profile | 400 validation; 401 wrong password |
+| `deleteUser`      | `src/app/(app)/profile/actions.ts`   | `{ password, confirmDelete }`                      | Delete user + sessions; redirect `/login` | 401 wrong password |
+
+#### Route Handlers (secondary / optional)
+
+```
+#### GET /api/auth/me
+Returns the currently authenticated user (no password fields).
+
+**Response:**
+- Success (200):
+```json
+{
+  "userId": "abc123",
+  "username": "jdoe",
+  "emailId": "jane@school.edu",
+  "createdAt": "2026-08-26T10:00:00Z"
+}
+```
+- Error (401): `{ "error": "Not authenticated" }`
+
+#### POST /api/auth/logout
+Alternative logout for non-form clients. Clears session cookie.
+
+**Response:**
+- Success (200): `{ "success": true }`
+- Error (401): `{ "error": "Not authenticated" }`
+```
+
+All route handlers validate input with Zod and delegate to `UserService`—never to the repository directly.
+
+### User Interface Requirements
+
+#### Register Page (`/register`)
+
+- Public route; redirect to `/` if already authenticated
+- Form fields:
+  - **Username** — required, 3–30 chars, alphanumeric + underscore/hyphen
+  - **Email** — required, valid email format
+  - **Password** — required, min 8 chars, at least one letter and one number
+  - **Confirm password** — must match password
+- Submit via Server Action `registerUser`
+- Show field-level errors via `FieldError` component
+- Link to `/login` for existing users
+- Success: redirect to login with banner "Account created. Please sign in."
+
+#### Login Page (`/login`)
+
+- Public route; redirect to `/` if already authenticated
+- Form fields:
+  - **Email** — required
+  - **Password** — required
+- Submit via Server Action `loginUser`
+- Generic error message on failure: "Invalid email or password" (do not reveal whether email exists)
+- Link to `/register`
+- Optional query param `?registered=1` shows success banner
+
+#### Home / Dashboard stub (`/`)
+
+- Protected route (requires session)
+- Display welcome message with username
+- Navigation includes **Profile** and **Log out**
+
+#### Profile / Settings Page (`/profile`)
+
+- Protected route
+- Display current username and email (read-only labels + editable fields)
+- **Update profile** section: username, email, optional password change (current password required when changing password)
+- **Delete account** section: password confirmation + typed "DELETE" confirmation; destructive styling
+- Submit via Server Actions `updateUser` and `deleteUser`
+
+#### App Shell / Navigation
+
+- Show **Login** and **Register** links when unauthenticated
+- Show **Profile** and **Log out** when authenticated
+- Log out triggered by form posting to `logoutUser` Server Action
+
+#### Validation Rules (Zod schemas — shared in `src/lib/validators/user.ts`)
+
+```typescript
+const passwordSchema = z
+  .string()
+  .min(8, "Password must be at least 8 characters")
+  .regex(/[a-zA-Z]/, "Password must contain a letter")
+  .regex(/[0-9]/, "Password must contain a number");
+
+const registerSchema = z
+  .object({
+    username: z.string().min(3).max(30).regex(/^[a-zA-Z0-9_-]+$/),
+    emailId: z.string().email(),
+    password: passwordSchema,
+    confirmPassword: z.string(),
+  })
+  .refine((d) => d.password === d.confirmPassword, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"],
+  });
+```
+
+---
+
+## Test-Driven Development Approach
+
+This feature is implemented using **unit-test-driven development**. Vitest is the project's preferred testing framework (see `.cursor/skills/testing/SKILL.md`). Tests are colocated with source files and run with `npm run test`.
+
+### One-Time Test Harness Setup (before Phase 1 code)
+
+Install Vitest and supporting libraries:
+
+```bash
+npm install -D vitest @vitejs/plugin-react @testing-library/react @testing-library/user-event jsdom vite-tsconfig-paths
+```
+
+Add `vitest.config.ts` at the repo root and scripts to `package.json`:
+
+```json
+"test": "vitest run",
+"test:watch": "vitest"
+```
+
+Create shared test utilities:
+
+| File | Purpose |
+|------|---------|
+| `src/test/mock-d1.ts` | In-memory/mock D1 `prepare().bind().all/run()` chain |
+| `src/test/mock-env.ts` | Fake `env.DB` for `getCloudflareContext()` mocks |
+| `src/test/fixtures/users.ts` | Reusable user/session fixture objects |
+
+### TDD Workflow (every phase)
+
+```
+1. Define test cases in the PRD phase plan (this document)
+2. Write failing unit tests (RED) — `npm run test` must show failures
+3. Implement minimal production code to satisfy tests (GREEN)
+4. Refactor while keeping tests green
+5. Confirm phase exit gate: all phase tests pass + mapped acceptance criteria met
+```
+
+### Unit Testing Conventions
+
+- **Colocate tests**: `src/lib/services/user-service.ts` → `src/lib/services/user-service.test.ts`
+- **Mock at boundaries**: mock D1 in repository tests; mock repositories in service tests; mock services in controller tests
+- **Never hit real D1 or network** in unit tests — use `src/test/mock-d1.ts`
+- **Mock Cloudflare context**:
+  ```typescript
+  vi.mock("@opennextjs/cloudflare", () => ({
+    getCloudflareContext: vi.fn(async () => ({ env: { DB: mockDb } })),
+  }));
+  vi.mock("server-only", () => ({}));
+  ```
+- **Mock Next.js navigation** in controller tests:
+  ```typescript
+  vi.mock("next/navigation", () => ({ redirect: vi.fn(), revalidatePath: vi.fn() }));
+  ```
+- **Client components only** in UI tests — Server Components are tested via their extracted plain functions/actions
+- **Assert observable behavior**, not implementation details; cover failure paths, not just happy paths
+- **Reset mocks** in `beforeEach(() => vi.clearAllMocks())`
+
+### Phase Completion Gate
+
+A phase is **COMPLETED** only when:
+
+1. All unit tests listed for that phase pass (`npm run test` — 0 failures)
+2. Mapped acceptance criteria (see table in each phase) are verified
+3. Phase status marker in this PRD is updated to `COMPLETED`
+
+### Acceptance Criteria ↔ Test Mapping
+
+| Acceptance criterion | Primary test file(s) |
+|----------------------|----------------------|
+| Register with username, email, password | `user-service.test.ts`, `register/actions.test.ts`, `register-form.test.tsx` |
+| Duplicate username/email rejected | `user-service.test.ts`, `user-repository.test.ts` |
+| Login with email/password + session cookie | `user-service.test.ts`, `login/actions.test.ts`, `session.test.ts` |
+| Invalid credentials — generic error | `user-service.test.ts`, `login/actions.test.ts` |
+| Authenticated user redirected from `/register`, `/login` | `middleware.test.ts` |
+| Unauthenticated user redirected from protected routes | `middleware.test.ts`, `get-current-user.test.ts` |
+| Profile view — no password fields | `user-service.test.ts`, `get-current-user.test.ts` |
+| Update username/email/password | `user-service.test.ts`, `profile/actions.test.ts` |
+| Logout invalidates session + clears cookie | `user-service.test.ts`, `auth-actions.test.ts`, `session.test.ts` |
+| Delete account with password confirmation | `user-service.test.ts`, `profile/actions.test.ts` |
+| Passwords stored as salted hashes only | `password.test.ts`, `user-repository.test.ts` |
+| Zod validation before service layer | `user.test.ts` (validators), `*/actions.test.ts` |
+| Layered architecture — no layer skipping | Enforced by import/mocking conventions in controller tests |
+
+---
+
+## Implementation Phases
+
+### Phase 1: Database & Repository Layer - COMPLETED
+
+**Objective**: Provision D1, implement data access for users and sessions, and prove repository behavior with unit tests.
+
+**TDD order**: Set up Vitest harness → write repository tests (RED) → implement repositories (GREEN).
+
+**Tasks**:
+1. Install Vitest and create `vitest.config.ts`, `src/test/mock-d1.ts`, `src/test/fixtures/users.ts`
+2. Create D1 database and add `DB` binding to `wrangler.jsonc`
+3. Write and apply local migration `0001_create_users_and_sessions.sql`
+4. **Write failing tests** in `user-repository.test.ts` and `session-repository.test.ts`
+5. Define TypeScript types in `src/lib/types/user.ts`
+6. Implement `src/lib/repositories/user-repository.ts` until tests pass
+7. Implement `src/lib/repositories/session-repository.ts` until tests pass
+
+**Unit Test Plan — `src/lib/repositories/user-repository.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `createUser` with valid input | Calls D1 INSERT with bound params; returns mapped `User` row |
+| 2 | `findByEmailId` when row exists | Returns user; query uses `?1` and `COLLATE NOCASE` |
+| 3 | `findByEmailId` when row missing | Returns `null` |
+| 4 | `findById` when row exists | Returns user |
+| 5 | `findById` when row missing | Returns `null` |
+| 6 | `findByUsername` when row exists | Returns user; case-insensitive match |
+| 7 | `updateUser` with username and email | Calls UPDATE with bound params; returns updated row |
+| 8 | `updateUser` with password hash and salt | Updates password fields only when provided |
+| 9 | `deleteUser` when row exists | Calls DELETE; returns success indicator |
+| 10 | `deleteUser` when row missing | Returns without throwing (or returns false — pick one and document) |
+
+**Unit Test Plan — `src/lib/repositories/session-repository.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `createSession` with userId and expiresAt | Inserts session row; returns `Session` with `session_id` |
+| 2 | `findById` when session exists and not expired | Returns session |
+| 3 | `findById` when session missing | Returns `null` |
+| 4 | `deleteSession` | Deletes row by `session_id` |
+| 5 | `deleteSessionsForUser` | Deletes all sessions for given `user_id` |
+| 6 | `deleteExpiredSessions` | Deletes rows where `expires_at` < now |
+
+**Deliverables**:
+- `vitest.config.ts`, `src/test/mock-d1.ts`, `src/test/fixtures/users.ts`
+- `migrations/0001_create_users_and_sessions.sql`
+- `src/lib/types/user.ts`
+- `src/lib/repositories/user-repository.ts` + `.test.ts` (all green)
+- `src/lib/repositories/session-repository.ts` + `.test.ts` (all green)
+
+**Phase exit gate**: 16 repository tests passing; migration applies locally; types compile.
+
+**Maps to acceptance criteria**: Password hash/salt columns persisted (foundation for #13).
+
+### Phase 2: Service Layer & Auth Utilities - PLANNED
+
+**Objective**: Implement business logic, password hashing, session helpers, and validators — all proven by unit tests before controllers consume them.
+
+**TDD order**: Write validator/password/session tests (RED) → implement utilities (GREEN) → write service tests with mocked repositories (RED) → implement `UserService` (GREEN).
+
+**Tasks**:
+1. Add `@noble/hashes` (or Web Crypto PBKDF2) and `zod`
+2. **Write failing tests** in `password.test.ts`, `session.test.ts`, `user.test.ts` (validators)
+3. Implement `src/lib/auth/password.ts`, `src/lib/auth/session.ts`, `src/lib/validators/user.ts`
+4. **Write failing tests** in `user-service.test.ts` (mock `user-repository` and `session-repository`)
+5. Implement `src/lib/services/user-service.ts` until all service tests pass
+
+**Unit Test Plan — `src/lib/auth/password.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `hashPassword` with same password, different salts | Produces different hashes |
+| 2 | `hashPassword` with same password and salt | Produces identical hash (deterministic) |
+| 3 | `verifyPassword` with correct password | Returns `true` |
+| 4 | `verifyPassword` with incorrect password | Returns `false` |
+| 5 | `generateSalt` | Returns non-empty string; unique across calls |
+
+**Unit Test Plan — `src/lib/auth/session.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `sessionCookieOptions` | Returns `httpOnly: true`, `sameSite: "lax"`, `path: "/"` |
+| 2 | `createSessionExpiry` | Returns date ~7 days in future (or configured TTL) |
+| 3 | `isSessionExpired` with past date | Returns `true` |
+| 4 | `isSessionExpired` with future date | Returns `false` |
+
+**Unit Test Plan — `src/lib/validators/user.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `registerSchema` with valid input | Parses successfully |
+| 2 | `registerSchema` with mismatched passwords | Fails on `confirmPassword` |
+| 3 | `registerSchema` with short password | Fails on `password` |
+| 4 | `registerSchema` with invalid email | Fails on `emailId` |
+| 5 | `registerSchema` with invalid username chars | Fails on `username` |
+| 6 | `loginSchema` with valid input | Parses successfully |
+| 7 | `loginSchema` with missing email | Fails |
+| 8 | `updateUserSchema` password change without current password | Fails |
+| 9 | `deleteUserSchema` without confirmDelete | Fails |
+
+**Unit Test Plan — `src/lib/services/user-service.test.ts`**
+
+Mock repositories with `vi.mock("@/lib/repositories/user-repository")` and `vi.mock("@/lib/repositories/session-repository")`.
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `register` with unique email and username | Hashes password, calls `createUser`, returns `SafeUser` without hash/salt |
+| 2 | `register` with existing email | Throws `CONFLICT`; does not call `createUser` |
+| 3 | `register` with existing username | Throws `CONFLICT`; does not call `createUser` |
+| 4 | `authenticate` with valid credentials | Returns `SafeUser`; no password fields in result |
+| 5 | `authenticate` with unknown email | Throws `UNAUTHORIZED` with generic message |
+| 6 | `authenticate` with wrong password | Throws `UNAUTHORIZED` with generic message |
+| 7 | `getUserById` when user exists | Returns `SafeUser` |
+| 8 | `getUserById` when user missing | Returns `null` or throws `NOT_FOUND` |
+| 9 | `updateUser` username only | Calls `updateUser` repo; returns updated `SafeUser` |
+| 10 | `updateUser` password without current password | Throws validation error |
+| 11 | `updateUser` password with wrong current password | Throws `UNAUTHORIZED` |
+| 12 | `updateUser` password with correct current password | Re-hashes and updates |
+| 13 | `deleteUser` with correct password | Deletes sessions then user |
+| 14 | `deleteUser` with wrong password | Throws `UNAUTHORIZED`; user not deleted |
+| 15 | `logout` with valid sessionId | Calls `deleteSession` |
+
+**Deliverables**:
+- `src/lib/auth/password.ts` + `.test.ts` (all green)
+- `src/lib/auth/session.ts` + `.test.ts` (all green)
+- `src/lib/validators/user.ts` + `.test.ts` (all green)
+- `src/lib/services/user-service.ts` + `.test.ts` (all green)
+
+**Phase exit gate**: 34 cumulative tests passing (16 repo + 18 service/utility); `npm run test` green for Phases 1–2.
+
+**Maps to acceptance criteria**: #1–4, #7–9, #11–13 (business logic layer).
+
+### Phase 3: Controller Layer (Server Actions & Middleware) - PLANNED
+
+**Objective**: Wire Server Actions and middleware to services; prove request/response and redirect behavior with unit tests.
+
+**TDD order**: Write action/middleware tests with mocked services (RED) → implement actions and middleware (GREEN).
+
+**Tasks**:
+1. **Write failing tests** for `get-current-user.test.ts`, `register/actions.test.ts`, `login/actions.test.ts`, `auth-actions.test.ts`, `profile/actions.test.ts`, `middleware.test.ts`
+2. Implement Server Actions for register, login, logout, update, delete
+3. Add `src/middleware.ts` to guard `(app)` routes
+4. Implement `getCurrentUser()` in `src/lib/auth/get-current-user.ts`
+5. Optionally add `GET /api/auth/me` + `src/app/api/auth/me/route.test.ts`
+
+**Unit Test Plan — `src/lib/auth/get-current-user.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Valid session cookie + active session in DB | Returns `SafeUser` |
+| 2 | Missing session cookie | Returns `null` |
+| 3 | Expired session | Returns `null`; optionally deletes expired session |
+| 4 | Session cookie present but session not in DB | Returns `null` |
+
+**Unit Test Plan — `src/app/(auth)/register/actions.test.ts`**
+
+Mock `userService.register`, `getCloudflareContext`, `redirect`.
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Invalid form data (Zod failure) | Returns `{ errors }` field map; does not call service |
+| 2 | Valid form data | Calls `userService.register`; calls `redirect("/login?registered=1")` |
+| 3 | Service throws CONFLICT | Returns user-facing error; no redirect |
+
+**Unit Test Plan — `src/app/(auth)/login/actions.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Invalid form data | Returns validation errors |
+| 2 | Valid credentials | Creates session via service/repo; sets session cookie; redirects to `/` |
+| 3 | Invalid credentials | Returns generic `{ error: "Invalid email or password" }`; no cookie set |
+
+**Unit Test Plan — `src/lib/actions/auth-actions.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `logoutUser` with active session | Deletes session; clears cookie; redirects to `/login` |
+| 2 | `logoutUser` with no session | Still clears cookie; redirects to `/login` |
+
+**Unit Test Plan — `src/app/(app)/profile/actions.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `updateUser` unauthenticated | Returns auth error |
+| 2 | `updateUser` valid profile fields | Calls service; returns success |
+| 3 | `updateUser` validation failure | Returns field errors |
+| 4 | `deleteUser` wrong password | Returns error; user not deleted |
+| 5 | `deleteUser` valid confirmation | Deletes user; clears session; redirects to `/login` |
+
+**Unit Test Plan — `src/middleware.test.ts`**
+
+Test the exported middleware matcher logic (extract pure `shouldRedirect` helper if needed for testability).
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Unauthenticated request to `/` | Redirect to `/login` |
+| 2 | Unauthenticated request to `/profile` | Redirect to `/login` |
+| 3 | Authenticated request to `/login` | Redirect to `/` |
+| 4 | Authenticated request to `/register` | Redirect to `/` |
+| 5 | Unauthenticated request to `/login` | Allow through (no redirect) |
+| 6 | Static assets / `_next` paths | Allow through (no redirect) |
+
+**Deliverables**:
+- All action files + corresponding `.test.ts` files (all green)
+- `src/middleware.ts` + `.test.ts` (or `src/lib/auth/route-guard.test.ts`)
+- `src/lib/auth/get-current-user.ts` + `.test.ts`
+
+**Phase exit gate**: 52+ cumulative tests passing; all controller tests green; middleware redirect rules verified.
+
+**Maps to acceptance criteria**: #1–6, #10–12, #14–15 (controller + routing layer).
+
+### Phase 4: UI Pages & Components - PLANNED
+
+**Objective**: Build user-facing auth and profile screens; prove client component behavior with Vitest + Testing Library.
+
+**TDD order**: Write component tests (RED) → build minimal components to pass (GREEN) → wire pages as thin Server Component shells.
+
+**Tasks**:
+1. **Write failing tests** for client form components and `auth-nav`
+2. Create route groups: `(auth)` for public pages, `(app)` for protected pages
+3. Implement `register-form.tsx`, `login-form.tsx`, `profile-form.tsx`, `auth-nav.tsx` until tests pass
+4. Build page shells that pass props/actions into forms
+5. Replace default home page with authenticated welcome/dashboard stub
+
+**Unit Test Plan — `src/components/auth/register-form.test.tsx`**
+
+Use `@testing-library/react` and `@testing-library/user-event`. Mock Server Actions.
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Renders username, email, password, confirm password fields | All fields visible by label |
+| 2 | Submit with empty fields | Shows validation errors from action response |
+| 3 | Submit with valid data | Calls `registerUser` action |
+| 4 | Displays server conflict error | Error message visible to user |
+| 5 | Link to login page | "Sign in" / "Login" link points to `/login` |
+
+**Unit Test Plan — `src/components/auth/login-form.test.tsx`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Renders email and password fields | Fields visible by label |
+| 2 | Submit with invalid credentials | Shows generic error message |
+| 3 | Submit with valid data | Calls `loginUser` action |
+| 4 | Shows registered banner when prop set | Success message visible |
+| 5 | Link to register page | Link points to `/register` |
+
+**Unit Test Plan — `src/components/auth/profile-form.test.tsx`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Displays current username and email | Values shown in inputs |
+| 2 | Update section submits changed username | Calls `updateUser` |
+| 3 | Password change requires current password field | Field present when new password entered |
+| 4 | Delete section requires password + confirmation | Both fields required before submit |
+| 5 | Delete uses destructive button styling | Delete button has destructive variant/class |
+
+**Unit Test Plan — `src/components/auth/auth-nav.test.tsx`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Unauthenticated state | Shows Login and Register links |
+| 2 | Authenticated state | Shows Profile link and Log out control |
+| 3 | Log out control | Triggers logout form/action |
+
+**Note**: Server Component pages (`page.tsx`) are not rendered in Vitest. Their logic is covered by action tests (Phase 3) and manual smoke checks (Phase 5).
+
+**Deliverables**:
+- `src/components/auth/*.tsx` + `.test.tsx` (all green — 18 component tests)
+- Page shells under `src/app/(auth)/` and `src/app/(app)/`
+
+**Phase exit gate**: 70+ cumulative unit tests passing; all component tests green.
+
+**Maps to acceptance criteria**: #1, #3–4, #7–9 (UI presentation and form interaction).
+
+### Phase 5: Suite Verification & Acceptance Sign-Off - PLANNED
+
+**Objective**: Confirm the full unit suite is green, map every acceptance criterion to passing tests, and run Workers-runtime smoke checks.
+
+**Tasks**:
+1. Run `npm run test` — entire suite must pass (0 failures)
+2. Walk the **Acceptance Criteria ↔ Test Mapping** table; mark each criterion complete only when its tests are green
+3. Update `.dev.vars.example` with `SESSION_SECRET`
+4. Run `npm run preview` for Workers-runtime smoke test (not covered by unit tests):
+   - Register → login → profile update → logout → login → delete account
+5. Document any gaps in troubleshooting guide
+
+**Unit Test Plan — `src/test/suite.test.ts` (meta / smoke)**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Test file inventory | All expected `*.test.ts(x)` files exist for phases 1–4 |
+| 2 | No hollow tests | Grep/lint guard: no `expect(true).toBe(true)` in test files |
+
+**Deliverables**:
+- Full green unit suite (`npm run test`)
+- All acceptance criteria checkboxes marked in this PRD
+- Updated `.dev.vars.example`
+- Workers preview smoke test notes in Troubleshooting (if issues found)
+
+**Phase exit gate**: `npm run test` exits 0; all 15 acceptance criteria checked; preview smoke flow verified once.
+
+**Feature COMPLETED when Phase 5 exit gate is met.**
+
+---
+
+## Technical Implementation Details
+
+### Layered Architecture Mapping
+
+In this Next.js + Cloudflare project, layers map as follows:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Controller                                              │
+│  Server Actions, Route Handlers, Middleware              │
+│  src/app/**/actions.ts, src/app/api/**, src/middleware.ts│
+└──────────────────────────┬──────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────┐
+│  Service                                                 │
+│  Business rules, auth, validation orchestration          │
+│  src/lib/services/user-service.ts                        │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────┐
+│  Repository                                              │
+│  D1 prepared statements, row mapping                     │
+│  src/lib/repositories/user-repository.ts                 │
+│  src/lib/repositories/session-repository.ts              │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────┐
+│  Database                                                │
+│  Cloudflare D1 (SQLite)                                  │
+│  migrations/*.sql                                        │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Rules:**
+- Controllers never import repositories directly; always go through services
+- Repositories never contain business logic (no password verification in repository)
+- Services never read cookies or Next.js headers; controllers pass parsed input
+- Database access only from server code via `getCloudflareContext().env.DB`
+
+### Key Files
+
+| Path | Purpose |
+|------|---------|
+| `wrangler.jsonc` | D1 binding configuration |
+| `migrations/0001_create_users_and_sessions.sql` | Schema |
+| `src/lib/types/user.ts` | `User`, `SafeUser`, `Session` types |
+| `src/lib/repositories/user-repository.ts` | User CRUD queries |
+| `src/lib/repositories/session-repository.ts` | Session CRUD queries |
+| `src/lib/services/user-service.ts` | Registration, auth, update, delete logic |
+| `src/lib/auth/password.ts` | Hash and verify passwords |
+| `src/lib/auth/session.ts` | Cookie + session lifecycle |
+| `src/lib/auth/get-current-user.ts` | Resolve user from session in RSC |
+| `src/lib/validators/user.ts` | Zod schemas |
+| `src/middleware.ts` | Route protection |
+| `src/app/(auth)/register/page.tsx` | Registration UI |
+| `src/app/(auth)/login/page.tsx` | Login UI |
+| `src/app/(app)/profile/page.tsx` | Profile management UI |
+| `vitest.config.ts` | Vitest configuration |
+| `src/test/mock-d1.ts` | Shared D1 mock for unit tests |
+| `**/*.test.ts(x)` | Colocated unit tests per layer |
+
+### Implementation Patterns
+
+**Repository — parameterized D1 query:**
+
+```typescript
+// src/lib/repositories/user-repository.ts
+import type { D1Database } from "@cloudflare/workers-types";
+
+export async function findByEmailId(db: D1Database, emailId: string) {
+  const { results } = await db
+    .prepare("SELECT * FROM users WHERE email_id = ?1 COLLATE NOCASE")
+    .bind(emailId)
+    .all<UserRow>();
+  return results[0] ?? null;
+}
+```
+
+**Service — register with uniqueness check:**
+
+```typescript
+// src/lib/services/user-service.ts
+export async function register(db: D1Database, input: RegisterInput): Promise<SafeUser> {
+  const existing = await userRepo.findByEmailId(db, input.emailId);
+  if (existing) throw new AppError("CONFLICT", "Email already registered");
+
+  const salt = generateSalt();
+  const passwordHash = await hashPassword(input.password, salt);
+  const user = await userRepo.createUser(db, {
+    username: input.username,
+    emailId: input.emailId,
+    passwordHash,
+    passwordSalt: salt,
+  });
+  return toSafeUser(user);
+}
+```
+
+**Controller — Server Action:**
+
+```typescript
+// src/app/(auth)/register/actions.ts
+"use server";
+
+import { redirect } from "next/navigation";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { registerSchema } from "@/lib/validators/user";
+import * as userService from "@/lib/services/user-service";
+
+export async function registerUser(formData: FormData) {
+  const parsed = registerSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { errors: parsed.error.flatten().fieldErrors };
+
+  const { env } = await getCloudflareContext();
+  await userService.register(env.DB, parsed.data);
+  redirect("/login?registered=1");
+}
+```
+
+**Session cookie (HTTP-only, Secure in production):**
+
+```typescript
+// src/lib/auth/session.ts
+const SESSION_COOKIE = "qm_session";
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+export function sessionCookieOptions(maxAge: number) {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge,
+  };
+}
+```
+
+### Important Notes
+
+- **Never return `password_hash` or `password_salt`** in API responses or page props; use a `SafeUser` type that omits sensitive fields
+- **Use numbered placeholders** (`?1`, `?2`) in all D1 queries per project conventions
+- **Prefer `all()` over `first()`** for D1 query results
+- **Run `npm run preview`** to test auth flows on the actual Workers runtime before considering the feature complete
+- **Session secret** must be set in `.dev.vars` locally and via `wrangler secret put SESSION_SECRET` in production
+- Controllers and middleware are the only layers that interact with cookies and redirects
+- **TDD is mandatory**: write or update tests in the same PR/commit as implementation; do not merge code with failing phase tests
+- Run `npm run test` after every implementation step; red → green is the expected cycle
+
+### Running Tests
+
+```bash
+npm run test          # run full suite once (CI / phase sign-off)
+npm run test:watch    # watch mode during TDD
+npm run test -- src/lib/services/user-service.test.ts  # single file
+```
+
+---
+
+## Acceptance Criteria
+
+Each criterion must pass its mapped unit tests (see **Acceptance Criteria ↔ Test Mapping**) before being checked off. Phase 5 sign-off requires all boxes checked and `npm run test` green.
+
+- [ ] A teacher can register with username, email, and password and is redirected to login — `user-service.test.ts`, `register/actions.test.ts`, `register-form.test.tsx`
+- [ ] Duplicate username or email returns a clear validation/conflict error without creating a row — `user-service.test.ts`, `user-repository.test.ts`
+- [ ] A teacher can log in with email and password and receive a session cookie — `login/actions.test.ts`, `session.test.ts`
+- [ ] Invalid credentials show a generic error without revealing whether the email exists — `user-service.test.ts`, `login/actions.test.ts`
+- [ ] An authenticated teacher visiting `/register` or `/login` is redirected to `/` — `middleware.test.ts`
+- [ ] An unauthenticated visitor accessing `/` or `/profile` is redirected to `/login` — `middleware.test.ts`
+- [ ] A teacher can view their profile (username, email) without seeing password data — `user-service.test.ts`, `get-current-user.test.ts`, `profile-form.test.tsx`
+- [ ] A teacher can update username and/or email while authenticated — `user-service.test.ts`, `profile/actions.test.ts`
+- [ ] A teacher can change password by providing the current password — `user-service.test.ts`, `profile/actions.test.ts`
+- [ ] A teacher can log out; session is invalidated and cookie cleared — `auth-actions.test.ts`, `session.test.ts`
+- [ ] After logout, accessing protected routes redirects to login — `middleware.test.ts`
+- [ ] A teacher can delete their account with password confirmation; user and sessions are removed from D1 — `user-service.test.ts`, `profile/actions.test.ts`
+- [ ] Passwords are stored only as salted hashes; no plain-text passwords in DB or logs — `password.test.ts`, `user-repository.test.ts`
+- [ ] All Server Action inputs are validated with Zod before reaching the service layer — `user.test.ts`, `*/actions.test.ts`
+- [ ] Architecture follows Controller → Service → Repository → Database with no layer skipping — enforced by mocking boundaries in controller tests
+
+---
+
+## Success Metrics
+
+| Metric | Target | How Measured |
+|--------|--------|--------------|
+| Unit test pass rate | 100% before phase sign-off | `npm run test` exit code 0 |
+| Registration completion rate | > 90% of started registrations | Compare register form submissions vs successful account creations |
+| Login success rate (valid credentials) | 100% | `user-service.test.ts` + `login/actions.test.ts` |
+| Session persistence | Session survives page reload for 7 days | Manual preview smoke test (Phase 5) |
+| Auth latency (login) | < 500 ms p95 local | Timestamp Server Action start to redirect (preview) |
+| Zero password leaks | 0 plain-text passwords in DB | `password.test.ts` + repository tests |
+
+---
+
+## Dependencies
+
+### External Dependencies
+
+- **Cloudflare D1** — SQLite database for users and sessions
+- **Cloudflare Workers runtime** — via `@opennextjs/cloudflare`
+- **@noble/hashes** (recommended) — PBKDF2/password hashing compatible with Workers; or Web Crypto `subtle.deriveBits`
+
+### Internal Dependencies
+
+- **Vitest** — unit test runner (`vitest`, `@vitejs/plugin-react`, `vite-tsconfig-paths`, `jsdom`)
+- **Testing Library** — component tests (`@testing-library/react`, `@testing-library/user-event`)
+- **shadcn/ui components** — `button`, `card`, `field`, `input`, `label` for forms
+- **`getCloudflareContext()`** — access `env.DB` binding
+- **Zod** — to be added as a dependency for input validation
+- **Next.js middleware** — route protection
+
+### Environment Variables
+
+| Variable | Purpose | Where set |
+|----------|---------|-----------|
+| `SESSION_SECRET` | Sign/encrypt session cookie values | `.dev.vars` (local), `wrangler secret` (prod) |
+
+Add to `.dev.vars.example`:
+
+```
+SESSION_SECRET=generate-a-random-string-at-least-32-chars
+```
+
+---
+
+## Risks and Mitigation
+
+### Technical Risks
+
+- **Risk**: D1 not yet configured in `wrangler.jsonc`
+- **Mitigation**: Phase 1 includes explicit D1 provisioning steps; block other phases until binding works locally
+
+- **Risk**: Password hashing libraries may not work on Workers runtime
+- **Mitigation**: Use Web Crypto or `@noble/hashes`; validate with `npm run preview`, not Node-only `dev`
+
+- **Risk**: Session fixation or cookie theft
+- **Mitigation**: HTTP-only + Secure cookies, server-side session IDs, regenerate session on login
+
+### User Experience Risks
+
+- **Risk**: Teachers use weak passwords
+- **Mitigation**: Enforce minimum complexity in Zod; document requirements on register form
+
+- **Risk**: Confusion after registration (expects auto-login)
+- **Mitigation**: Redirect to login with clear success message; consider auto-login as future enhancement
+
+---
+
+## Troubleshooting Guide
+
+### D1 binding errors locally
+
+**Problem**: `env.DB` is undefined or type errors after adding binding
+**Cause**: `cf-typegen` not run or wrangler.jsonc misconfigured
+**Solution**: Add `d1_databases` block, run `npm run cf-typegen`, restart dev/preview
+
+### D1 placeholder binding failures
+
+**Problem**: Query throws binding count mismatch
+**Cause**: Mixed `?` and `?1` placeholders
+**Solution**: Use numbered placeholders consistently (`?1`, `?2`, …)
+
+### Auth works in dev but fails in preview
+
+**Problem**: Session cookie not set or D1 queries fail in preview
+**Cause**: `npm run dev` uses Node; Workers runtime differs
+**Solution**: Test with `npm run preview`; ensure `.dev.vars` has `SESSION_SECRET`
+
+### Vitest cannot resolve `@/` imports
+
+**Problem**: Tests fail with module not found for `@/lib/...`
+**Cause**: Missing `vite-tsconfig-paths` plugin in `vitest.config.ts`
+**Solution**: Add plugin per `.cursor/skills/testing/SKILL.md`; restart test runner
+
+### Tests pass locally but D1 behaves differently in preview
+
+**Problem**: Repository logic works in unit tests but fails against real D1
+**Cause**: Unit tests use mocks; real D1 binding/placeholder issues
+**Solution**: Run Phase 5 preview smoke test; fix placeholder numbering per d1.mdc rules
+
+---
+
+## Notes for AI Agents
+
+When working with this PRD:
+
+1. Start by reading the Problem and Hypothesis to understand intent
+2. Use Scope (In/Out/Cut) to determine boundaries — do not build test-bank or MCQ features
+3. **Follow TDD**: write failing tests first (RED), implement until green, then refactor
+4. Follow the layered architecture strictly: Controllers → Services → Repositories → D1
+5. Install Vitest harness (Phase 1) before writing production repository code
+6. Update phase status markers (`PLANNED` → `IN PROGRESS` → `COMPLETED`) when phase exit gates pass
+7. Run `npm run test` before marking a phase complete; all phase tests must be green
+8. Mark acceptance criteria complete only when mapped unit tests pass
+9. Add implementation details under "Technical Implementation Details" as code is written
+10. Add troubleshooting entries when bugs are found and fixed
+11. Never apply D1 migrations with `--remote`; local apply only unless the user explicitly requests remote
+12. Use code references format: `filepath:line-number` when citing code
+13. Read `.cursor/skills/testing/SKILL.md` for Vitest conventions before writing tests
+14. Do not introduce `@cloudflare/vitest-pool-workers` without user approval — unit tests use mocks
+
+---
+
+## Current Status
+
+**Last Updated**: 2026-08-26
+**Current Phase**: Phase 2 - Service Layer & Auth Utilities
+**Status**: PLANNED (Phase 1 complete — awaiting review)
+**Test Suite Status**: 16/16 repository tests passing (`npm run test`)
+**Next Steps**: Review Phase 1 PR; then begin Phase 2 — password, session, validators, UserService
