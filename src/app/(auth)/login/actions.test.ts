@@ -44,7 +44,7 @@ describe("loginUser", () => {
 	it("returns validation errors for invalid form data", async () => {
 		const formData = createLoginFormData({ emailId: "not-an-email" });
 
-		const result = await loginUser(formData);
+		const result = await loginUser(undefined, formData);
 
 		expect(result).toHaveProperty("errors");
 		expect(userService.login).not.toHaveBeenCalled();
@@ -62,7 +62,7 @@ describe("loginUser", () => {
 			sessionId: "session-001",
 		});
 
-		await expect(loginUser(createLoginFormData())).rejects.toThrow("NEXT_REDIRECT:/");
+		await expect(loginUser(undefined, createLoginFormData())).rejects.toThrow("NEXT_REDIRECT:/");
 		expect(setSessionCookie).toHaveBeenCalledWith("session-001");
 		expect(redirect).toHaveBeenCalledWith("/");
 	});
@@ -72,7 +72,7 @@ describe("loginUser", () => {
 			new AppError("UNAUTHORIZED", "Invalid email or password"),
 		);
 
-		const result = await loginUser(createLoginFormData());
+		const result = await loginUser(undefined, createLoginFormData());
 
 		expect(result).toEqual({ error: "Invalid email or password" });
 		expect(setSessionCookie).not.toHaveBeenCalled();

@@ -38,7 +38,7 @@ describe("registerUser", () => {
 	it("returns validation errors for invalid form data", async () => {
 		const formData = createRegisterFormData({ password: "short", confirmPassword: "short" });
 
-		const result = await registerUser(formData);
+		const result = await registerUser(undefined, formData);
 
 		expect(result).toHaveProperty("errors");
 		expect(userService.register).not.toHaveBeenCalled();
@@ -53,7 +53,7 @@ describe("registerUser", () => {
 			updatedAt: "2026-08-26T10:00:00Z",
 		});
 
-		await expect(registerUser(createRegisterFormData())).rejects.toThrow(
+		await expect(registerUser(undefined, createRegisterFormData())).rejects.toThrow(
 			"NEXT_REDIRECT:/login?registered=1",
 		);
 		expect(userService.register).toHaveBeenCalledOnce();
@@ -65,7 +65,7 @@ describe("registerUser", () => {
 			new AppError("CONFLICT", "Email already registered"),
 		);
 
-		const result = await registerUser(createRegisterFormData());
+		const result = await registerUser(undefined, createRegisterFormData());
 
 		expect(result).toEqual({ error: "Email already registered" });
 		expect(redirect).not.toHaveBeenCalled();

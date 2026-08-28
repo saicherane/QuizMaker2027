@@ -14,7 +14,10 @@ export type LoginActionState =
 	| { error: string }
 	| undefined;
 
-export async function loginUser(formData: FormData): Promise<LoginActionState> {
+export async function loginUser(
+	_prevState: LoginActionState,
+	formData: FormData,
+): Promise<LoginActionState> {
 	const parsed = loginSchema.safeParse(formDataToRecord(formData));
 	if (!parsed.success) {
 		return { errors: flattenZodErrors(parsed.error) };

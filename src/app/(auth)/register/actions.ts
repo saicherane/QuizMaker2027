@@ -13,7 +13,10 @@ export type RegisterActionState =
 	| { error: string }
 	| undefined;
 
-export async function registerUser(formData: FormData): Promise<RegisterActionState> {
+export async function registerUser(
+	_prevState: RegisterActionState,
+	formData: FormData,
+): Promise<RegisterActionState> {
 	const parsed = registerSchema.safeParse(formDataToRecord(formData));
 	if (!parsed.success) {
 		return { errors: flattenZodErrors(parsed.error) };
