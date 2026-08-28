@@ -51,6 +51,24 @@ export interface CreateSessionInput {
 	expiresAt: string;
 }
 
+export interface SafeUser {
+	userId: string;
+	username: string;
+	emailId: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export function toSafeUser(user: User): SafeUser {
+	return {
+		userId: user.userId,
+		username: user.username,
+		emailId: user.emailId,
+		createdAt: user.createdAt,
+		updatedAt: user.updatedAt,
+	};
+}
+
 export function mapUserRow(row: UserRow): User {
 	return {
 		userId: row.user_id,

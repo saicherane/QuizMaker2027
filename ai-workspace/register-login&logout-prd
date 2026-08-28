@@ -362,7 +362,7 @@ A phase is **COMPLETED** only when:
 
 **Maps to acceptance criteria**: Password hash/salt columns persisted (foundation for #13).
 
-### Phase 2: Service Layer & Auth Utilities - PLANNED
+### Phase 2: Service Layer & Auth Utilities - COMPLETED
 
 **Objective**: Implement business logic, password hashing, session helpers, and validators — all proven by unit tests before controllers consume them.
 
@@ -917,8 +917,8 @@ When working with this PRD:
 
 ## Current Status
 
-**Last Updated**: 2026-08-26
-**Current Phase**: Phase 2 - Service Layer & Auth Utilities
-**Status**: PLANNED (Phase 1 complete — awaiting review)
-**Test Suite Status**: 16/16 repository tests passing (`npm run test`)
-**Next Steps**: Review Phase 1 PR; then begin Phase 2 — password, session, validators, UserService
+**Last Updated**: 2026-08-28
+**Current Phase**: Phase 3 - Controller Layer (Server Actions & Middleware)
+**Status**: PLANNED (Phase 2 complete — awaiting review)
+**Test Suite Status**: 49/49 tests passing (`npm run test`)
+**Next Steps**: Review Phase 2 commit; then begin Phase 3 — Server Actions, middleware, getCurrentUser
