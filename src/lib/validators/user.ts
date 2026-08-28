@@ -68,7 +68,7 @@ export const updateUserSchema = z
 export const deleteUserSchema = z.object({
 	password: z.string().min(1, "Password is required"),
 	confirmDelete: z.literal("DELETE", {
-		errorMap: () => ({ message: 'Type "DELETE" to confirm account deletion' }),
+		message: 'Type "DELETE" to confirm account deletion',
 	}),
 });
 
