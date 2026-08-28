@@ -1,6 +1,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 
 import { generateSalt, hashPassword, verifyPassword } from "@/lib/auth/password";
+import { createSessionExpiry } from "@/lib/auth/session";
 import { AppError } from "@/lib/errors/app-error";
 import * as sessionRepository from "@/lib/repositories/session-repository";
 import * as userRepository from "@/lib/repositories/user-repository";
@@ -59,6 +60,20 @@ export async function authenticate(
 	}
 
 	return toSafeUser(user);
+}
+
+export async function login(
+	db: D1Database,
+	emailId: string,
+	password: string,
+): Promise<{ user: SafeUser; sessionId: string }> {
+	const user = await authenticate(db, emailId, password);
+	const session = await sessionRepository.createSession(db, {
+		userId: user.userId,
+		expiresAt: createSessionExpiry(),
+	});
+
+	return { user, sessionId: session.sessionId };
 }
 
 export async function getUserById(db: D1Database, userId: string): Promise<SafeUser | null> {

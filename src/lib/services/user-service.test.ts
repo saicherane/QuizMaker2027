@@ -228,4 +228,20 @@ describe("user-service", () => {
 
 		expect(sessionRepository.deleteSession).toHaveBeenCalledWith(db, "session-001");
 	});
+
+	it("login authenticates user and creates session", async () => {
+		const existingUser = createUser();
+		vi.mocked(userRepository.findByEmailId).mockResolvedValue(existingUser);
+		vi.mocked(sessionRepository.createSession).mockResolvedValue({
+			sessionId: "session-001",
+			userId: existingUser.userId,
+			expiresAt: "2099-01-01T00:00:00.000Z",
+			createdAt: "2026-08-26T10:00:00Z",
+		});
+
+		const result = await userService.login(db, "jane@school.edu", "Password1");
+
+		expect(result.user.userId).toBe("user-001");
+		expect(result.sessionId).toBe("session-001");
+	});
 });

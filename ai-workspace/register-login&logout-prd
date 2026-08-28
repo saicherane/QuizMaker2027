@@ -440,7 +440,7 @@ Mock repositories with `vi.mock("@/lib/repositories/user-repository")` and `vi.m
 
 **Maps to acceptance criteria**: #1–4, #7–9, #11–13 (business logic layer).
 
-### Phase 3: Controller Layer (Server Actions & Middleware) - PLANNED
+### Phase 3: Controller Layer (Server Actions & Middleware) - COMPLETED
 
 **Objective**: Wire Server Actions and middleware to services; prove request/response and redirect behavior with unit tests.
 
@@ -918,7 +918,7 @@ When working with this PRD:
 ## Current Status
 
 **Last Updated**: 2026-08-28
-**Current Phase**: Phase 3 - Controller Layer (Server Actions & Middleware)
-**Status**: PLANNED (Phase 2 complete — awaiting review)
-**Test Suite Status**: 49/49 tests passing (`npm run test`)
-**Next Steps**: Review Phase 2 commit; then begin Phase 3 — Server Actions, middleware, getCurrentUser
+**Current Phase**: Phase 4 - UI Pages & Components
+**Status**: PLANNED (Phase 3 complete — awaiting review)
+**Test Suite Status**: 73/73 tests passing (`npm run test`)
+**Next Steps**: Review Phase 3 commit; then begin Phase 4 — auth UI pages and components
