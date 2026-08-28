@@ -519,7 +519,7 @@ Test the exported middleware matcher logic (extract pure `shouldRedirect` helper
 
 **Maps to acceptance criteria**: #1–6, #10–12, #14–15 (controller + routing layer).
 
-### Phase 4: UI Pages & Components - PLANNED
+### Phase 4: UI Pages & Components - COMPLETED
 
 **Objective**: Build user-facing auth and profile screens; prove client component behavior with Vitest + Testing Library.
 
@@ -918,7 +918,7 @@ When working with this PRD:
 ## Current Status
 
 **Last Updated**: 2026-08-28
-**Current Phase**: Phase 4 - UI Pages & Components
-**Status**: PLANNED (Phase 3 complete — awaiting review)
-**Test Suite Status**: 73/73 tests passing (`npm run test`)
-**Next Steps**: Review Phase 3 commit; then begin Phase 4 — auth UI pages and components
+**Current Phase**: Phase 5 - Suite Verification & Acceptance Sign-Off
+**Status**: PLANNED (Phase 4 complete — awaiting review)
+**Test Suite Status**: 91/91 tests passing (`npm run test`)
+**Next Steps**: Review Phase 4 commit; then begin Phase 5 — full suite sign-off and preview smoke test

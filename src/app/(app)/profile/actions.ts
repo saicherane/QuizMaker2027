@@ -16,7 +16,10 @@ export type ProfileActionState =
 	| { error: string }
 	| undefined;
 
-export async function updateProfile(formData: FormData): Promise<ProfileActionState> {
+export async function updateProfile(
+	_prevState: ProfileActionState,
+	formData: FormData,
+): Promise<ProfileActionState> {
 	const user = await getCurrentUser();
 	if (!user) {
 		return { error: "Not authenticated" };
@@ -44,7 +47,10 @@ export async function updateProfile(formData: FormData): Promise<ProfileActionSt
 	}
 }
 
-export async function deleteAccount(formData: FormData): Promise<ProfileActionState> {
+export async function deleteAccount(
+	_prevState: ProfileActionState,
+	formData: FormData,
+): Promise<ProfileActionState> {
 	const user = await getCurrentUser();
 	if (!user) {
 		return { error: "Not authenticated" };

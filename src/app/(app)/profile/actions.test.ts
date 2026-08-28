@@ -52,7 +52,7 @@ describe("profile actions", () => {
 	it("updateProfile returns auth error when unauthenticated", async () => {
 		vi.mocked(getCurrentUser).mockResolvedValue(null);
 
-		const result = await updateProfile(new FormData());
+		const result = await updateProfile(undefined, new FormData());
 
 		expect(result).toEqual({ error: "Not authenticated" });
 	});
@@ -67,7 +67,7 @@ describe("profile actions", () => {
 		const formData = new FormData();
 		formData.set("username", "janedoe");
 
-		const result = await updateProfile(formData);
+		const result = await updateProfile(undefined, formData);
 
 		expect(result).toEqual({ success: true });
 		expect(userService.updateUser).toHaveBeenCalledWith(expect.anything(), "user-001", {
@@ -82,7 +82,7 @@ describe("profile actions", () => {
 		formData.set("newPassword", "Password2");
 		formData.set("confirmPassword", "Password2");
 
-		const result = await updateProfile(formData);
+		const result = await updateProfile(undefined, formData);
 
 		expect(result).toHaveProperty("errors");
 		expect(userService.updateUser).not.toHaveBeenCalled();
@@ -98,7 +98,7 @@ describe("profile actions", () => {
 		formData.set("password", "WrongPassword1");
 		formData.set("confirmDelete", "DELETE");
 
-		const result = await deleteAccount(formData);
+		const result = await deleteAccount(undefined, formData);
 
 		expect(result).toEqual({ error: "Password is incorrect" });
 		expect(clearSessionCookie).not.toHaveBeenCalled();
@@ -113,7 +113,7 @@ describe("profile actions", () => {
 		formData.set("password", "Password1");
 		formData.set("confirmDelete", "DELETE");
 
-		await expect(deleteAccount(formData)).rejects.toThrow("NEXT_REDIRECT:/login");
+		await expect(deleteAccount(undefined, formData)).rejects.toThrow("NEXT_REDIRECT:/login");
 		expect(userService.deleteUser).toHaveBeenCalledWith(
 			expect.anything(),
 			"user-001",

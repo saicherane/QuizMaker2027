@@ -8,7 +8,7 @@ export default async function LoginPage({
 	const params = await searchParams;
 
 	return (
-		<main className="flex min-h-screen items-center justify-center p-6">
+		<main className="flex min-h-[calc(100vh-4.5rem)] items-center justify-center p-6">
 			<LoginForm registered={params.registered === "1"} />
 		</main>
 	);
