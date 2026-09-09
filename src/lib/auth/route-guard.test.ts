@@ -11,6 +11,11 @@ describe("route-guard", () => {
 		expect(resolveAuthRedirect("/profile", false)).toBe("/login");
 	});
 
+	it("redirects unauthenticated requests from questions to login", () => {
+		expect(resolveAuthRedirect("/questions", false)).toBe("/login");
+		expect(resolveAuthRedirect("/questions/new", false)).toBe("/login");
+	});
+
 	it("redirects authenticated requests from login to home", () => {
 		expect(resolveAuthRedirect("/login", true)).toBe("/");
 	});

@@ -419,7 +419,7 @@ Mock all three repositories.
 
 **Phase exit gate**: Validator + service tests green.
 
-### Phase 3: Controller Layer (Server Actions) - PLANNED
+### Phase 3: Controller Layer (Server Actions) - COMPLETED
 
 **Objective**: Wire Server Actions to `McqService`; protect mutations with `getCurrentUser()`.
 
@@ -772,7 +772,7 @@ When working with this PRD:
 ## Current Status
 
 **Last Updated**: 2026-09-09
-**Current Phase**: Phase 3 - Controller Layer (Server Actions)
-**Status**: IN PROGRESS — Phase 2 complete (validators + McqService, 19 new tests)
-**Test Suite Status**: 125 tests passing
-**Next Steps**: Implement Server Actions for create, update, delete, and recordAttempt (Phase 3)
+**Current Phase**: Phase 4 - UI Pages & Components
+**Status**: IN PROGRESS — Phase 3 complete (Server Actions, API routes, route guard, 12 new tests)
+**Test Suite Status**: 136 tests passing
+**Next Steps**: Build Shadcn UI pages and components (Phase 4)

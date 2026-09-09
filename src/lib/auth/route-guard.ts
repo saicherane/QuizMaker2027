@@ -1,5 +1,5 @@
 const AUTH_PUBLIC_PATHS = new Set(["/login", "/register"]);
-const AUTH_PROTECTED_PREFIXES = ["/profile"];
+const AUTH_PROTECTED_PREFIXES = ["/profile", "/questions"];
 
 export function isStaticAssetPath(pathname: string): boolean {
 	return (
