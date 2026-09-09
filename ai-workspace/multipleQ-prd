@@ -370,7 +370,7 @@ A phase is **COMPLETED** only when:
 
 **Phase exit gate**: All repository tests green; migration applies locally.
 
-### Phase 2: Service Layer & Validators - PLANNED
+### Phase 2: Service Layer & Validators - COMPLETED
 
 **Objective**: Implement `McqService` business rules and Zod validators.
 
@@ -772,7 +772,7 @@ When working with this PRD:
 ## Current Status
 
 **Last Updated**: 2026-09-09
-**Current Phase**: Phase 2 - Service Layer & Validators
-**Status**: IN PROGRESS — Phase 1 complete (migration, types, repositories, 13 repository tests)
-**Test Suite Status**: Auth baseline + 13 MCQ repository tests
-**Next Steps**: Implement Zod validators and `McqService` with unit tests (Phase 2)
+**Current Phase**: Phase 3 - Controller Layer (Server Actions)
+**Status**: IN PROGRESS — Phase 2 complete (validators + McqService, 19 new tests)
+**Test Suite Status**: 125 tests passing
+**Next Steps**: Implement Server Actions for create, update, delete, and recordAttempt (Phase 3)

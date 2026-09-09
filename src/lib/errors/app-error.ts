@@ -1,4 +1,4 @@
-export type AppErrorCode = "CONFLICT" | "UNAUTHORIZED" | "NOT_FOUND" | "VALIDATION";
+export type AppErrorCode = "CONFLICT" | "UNAUTHORIZED" | "NOT_FOUND" | "VALIDATION" | "FORBIDDEN";
 
 export class AppError extends Error {
 	constructor(
