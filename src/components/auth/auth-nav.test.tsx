@@ -34,6 +34,7 @@ describe("AuthNav", () => {
 	it("shows profile link and logout control when authenticated", () => {
 		render(<AuthNav isAuthenticated={true} />);
 
+		expect(screen.getByRole("link", { name: "Questions" })).toHaveAttribute("href", "/questions");
 		expect(screen.getByRole("link", { name: "Profile" })).toHaveAttribute("href", "/profile");
 		expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
 	});

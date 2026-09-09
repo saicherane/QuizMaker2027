@@ -8,6 +8,9 @@ export function AuthNav({ isAuthenticated }: { isAuthenticated: boolean }) {
 	if (isAuthenticated) {
 		return (
 			<nav className="flex items-center gap-3" aria-label="Account">
+				<Link href="/questions" className={cn(buttonVariants({ variant: "outline" }))}>
+					Questions
+				</Link>
 				<Link href="/profile" className={cn(buttonVariants({ variant: "outline" }))}>
 					Profile
 				</Link>

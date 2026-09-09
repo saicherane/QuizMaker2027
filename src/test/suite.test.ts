@@ -28,6 +28,9 @@ const expectedTestFiles = [
 	"src/components/auth/login-form.test.tsx",
 	"src/components/auth/profile-form.test.tsx",
 	"src/components/auth/auth-nav.test.tsx",
+	"src/components/mcq/questions-table.test.tsx",
+	"src/components/mcq/mcq-form.test.tsx",
+	"src/components/mcq/mcq-preview.test.tsx",
 ];
 
 describe("auth test suite inventory", () => {

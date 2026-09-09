@@ -467,7 +467,7 @@ Mock all three repositories.
 
 **Phase exit gate**: All controller tests green.
 
-### Phase 4: UI Pages & Components - PLANNED
+### Phase 4: UI Pages & Components - COMPLETED
 
 **Objective**: Build Shadcn-based list, form, preview, and navigation.
 
@@ -772,7 +772,7 @@ When working with this PRD:
 ## Current Status
 
 **Last Updated**: 2026-09-09
-**Current Phase**: Phase 4 - UI Pages & Components
-**Status**: IN PROGRESS — Phase 3 complete (Server Actions, API routes, route guard, 12 new tests)
-**Test Suite Status**: 136 tests passing
-**Next Steps**: Build Shadcn UI pages and components (Phase 4)
+**Current Phase**: Phase 5 - Suite Verification & Acceptance Sign-Off
+**Status**: IN PROGRESS — Phase 4 complete (UI pages, Shadcn components, 14 component tests)
+**Test Suite Status**: 150 tests passing
+**Next Steps**: Full suite verification, preview smoke test, acceptance criteria sign-off
