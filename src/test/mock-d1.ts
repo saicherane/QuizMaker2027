@@ -22,26 +22,27 @@ export function createMockD1(options: MockD1Options = {}) {
 	const calls: MockD1Call[] = [];
 
 	const db = {
-		prepare: vi.fn((sql: string) => ({
-			bind: vi.fn((...bindings: unknown[]) => ({
-				all: vi.fn(async () => {
-					const call: MockD1Call = { sql, bindings, method: "all" };
-					calls.push(call);
-					if (options.onQuery) {
-						return options.onQuery(call);
-					}
-					return { results: [] };
-				}),
-				run: vi.fn(async () => {
-					const call: MockD1Call = { sql, bindings, method: "run" };
-					calls.push(call);
-					if (options.onQuery) {
-						return options.onQuery(call);
-					}
-					return { success: true, meta: { changes: 0 } };
-				}),
-			})),
-		})),
+		prepare: vi.fn((sql: string) => {
+			const execute = async (bindings: unknown[], method: "all" | "run") => {
+				const call: MockD1Call = { sql, bindings, method };
+				calls.push(call);
+				if (options.onQuery) {
+					return options.onQuery(call);
+				}
+				return method === "all"
+					? { results: [] }
+					: { success: true, meta: { changes: 0 } };
+			};
+
+			return {
+				bind: vi.fn((...bindings: unknown[]) => ({
+					all: vi.fn(async () => execute(bindings, "all")),
+					run: vi.fn(async () => execute(bindings, "run")),
+				})),
+				all: vi.fn(async () => execute([], "all")),
+				run: vi.fn(async () => execute([], "run")),
+			};
+		}),
 		getCalls: () => calls,
 	};
 

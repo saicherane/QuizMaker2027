@@ -5,6 +5,9 @@ import { describe, expect, it } from "vitest";
 const expectedTestFiles = [
 	"src/lib/repositories/user-repository.test.ts",
 	"src/lib/repositories/session-repository.test.ts",
+	"src/lib/repositories/mcq-repository.test.ts",
+	"src/lib/repositories/choice-repository.test.ts",
+	"src/lib/repositories/attempt-repository.test.ts",
 	"src/lib/auth/password.test.ts",
 	"src/lib/auth/session.test.ts",
 	"src/lib/validators/user.test.ts",

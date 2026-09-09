@@ -1,0 +1,778 @@
+Date created: 2026-09-08
+Date last modified: 2026-09-08 (MCQ schema: `question` field replaces `description`)
+
+# Multiple Choice Questions (MCQ) - Technical PRD
+
+## Overview/Problem
+
+QuizMaker now has teacher authentication, but teachers still cannot create, view, edit, or delete multiple-choice questions in a shared test bank. Without an MCQ management layer, the platform cannot store question content, answer choices, or track whether a teacher answered a question correctly during preview or practice. This phase delivers the foundational MCQ domain: three related D1 tables (`mcqs`, `choices`, `attempts`), a layered backend (`McqService` + repositories), and Shadcn-based UI for listing questions, creating/editing with 2–6 choices, previewing, and deleting.
+
+---
+
+## Hypothesis
+
+We believe that providing authenticated teachers with a table-driven MCQ list, a dedicated create/edit form with Save and Cancel, and row actions (Edit, Preview, Delete) backed by a test-driven service layer will let teachers build and maintain a reusable question bank while keeping the codebase ready for future quiz assembly and collaboration features.
+
+---
+
+## Scope
+
+### In Scope
+
+What will be built in this feature:
+
+- **Three D1 tables**: `mcqs` (`mcq_id`, `name`, `question`, `created_by`, `created_at`, `updated_at`), `choices` (2–6 answer options per question with one correct answer), `attempts` (user attempts with correct/incorrect result)
+- **Layered backend**: Controller (Server Actions / optional route handlers) → Service (`McqService`) → Repositories (`mcq-repository`, `choice-repository`, `attempt-repository`) → D1
+- **MCQ list page** (`/questions`) — protected route; Shadcn `Table` showing name and question; **Create** button navigates to `/questions/new`
+- **Row actions menu** — Shadcn `DropdownMenu` (⋮) per row with **Edit**, **Preview**, and **Delete**
+- **Create / Edit page** (`/questions/new`, `/questions/[mcqId]/edit`) — form with name, question, dynamic choices (default 2, add up to 6, remove down to 2), mark exactly one choice as correct; **Save** and **Cancel** buttons (Cancel returns to list without saving)
+- **Preview page** (`/questions/[mcqId]/preview`) — read-only display of question and choices; teacher can select an answer and **Submit** to record an attempt with correct/incorrect result
+- **Delete** — confirmation via Shadcn `AlertDialog`; cascades choices and attempts for that MCQ
+- **Ownership** — each MCQ is tied to `created_by` (`user_id`); only the creator can update or delete (list shows all MCQs for now; authorization enforced on mutations)
+- **Input validation** with Zod on all Server Actions
+- **D1 migration** `0002_create_mcq_tables.sql`
+- **Test-driven development (TDD)** with **Vitest** — unit tests written before or alongside each layer
+
+### Out of Scope
+
+What is explicitly not being built now but may be considered later:
+
+- Quiz assembly (grouping multiple MCQs into a quiz)
+- Timed assessments or student-facing quiz player
+- Sharing MCQs between teachers / collaborative test banks
+- Rich text or image uploads in question bodies
+- Question categories, tags, or TEKS alignment
+- Bulk import/export (CSV, QTI)
+- Pagination, search, and sort on the list table (stub shows all rows; add when volume grows)
+- Admin override to edit/delete any user's questions
+- API route handlers for external consumers (Server Actions are primary; optional `GET /api/mcqs` noted for future)
+
+### Cut
+
+Things that were considered during planning but deliberately removed (and why):
+
+- **Single denormalized table with JSON choices** — Normalized `choices` table with FK is easier to query, validate, and test; aligns with attempts referencing `choice_id`
+- **Unlimited choices** — Capped at 6 per user requirement; simplifies UI and validation
+- **Soft delete (`deleted_at`)** — Hard delete with cascade is sufficient for phase 1; audit trail can be added later
+- **Separate "Take quiz" flow** — Preview page doubles as practice; dedicated assessment UI is out of scope
+
+---
+
+## Technical Requirements
+
+### Database Schema
+
+Migration: `0002_create_mcq_tables.sql`
+
+```sql
+-- Multiple-choice question (parent)
+CREATE TABLE mcqs (
+  mcq_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  name TEXT NOT NULL,
+  question TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (created_by) REFERENCES users (user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_mcqs_created_by ON mcqs (created_by);
+CREATE INDEX idx_mcqs_updated_at ON mcqs (updated_at DESC);
+
+-- Answer choices (child); 2–6 per MCQ enforced in service layer
+CREATE TABLE choices (
+  choice_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  mcq_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  is_correct INTEGER NOT NULL DEFAULT 0 CHECK (is_correct IN (0, 1)),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (mcq_id) REFERENCES mcqs (mcq_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_choices_mcq_id ON choices (mcq_id);
+CREATE UNIQUE INDEX idx_choices_mcq_sort ON choices (mcq_id, sort_order);
+
+-- User attempts (records answer + result)
+CREATE TABLE attempts (
+  attempt_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  user_id TEXT NOT NULL,
+  mcq_id TEXT NOT NULL,
+  choice_id TEXT NOT NULL,
+  is_correct INTEGER NOT NULL CHECK (is_correct IN (0, 1)),
+  attempted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
+  FOREIGN KEY (mcq_id) REFERENCES mcqs (mcq_id) ON DELETE CASCADE,
+  FOREIGN KEY (choice_id) REFERENCES choices (choice_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_attempts_user_id ON attempts (user_id);
+CREATE INDEX idx_attempts_mcq_id ON attempts (mcq_id);
+```
+
+**Column mapping (domain → database):**
+
+| Domain field   | DB column     | Notes                                           |
+|----------------|---------------|-------------------------------------------------|
+| McqId          | `mcq_id`      | TEXT hex string, primary key (`id`)             |
+| Name           | `name`        | Short title / label for list table              |
+| Question       | `question`    | Full question text shown to the teacher/student |
+| CreatedBy      | `created_by`  | FK → `users.user_id`; who created the MCQ       |
+| CreatedAt      | `created_at`  | When the MCQ was created                        |
+| UpdatedAt      | `updated_at`  | When the MCQ was last modified                  |
+| ChoiceId       | `choice_id`   | Primary key for each option                     |
+| Label          | `label`       | Choice display text                             |
+| IsCorrect      | `is_correct`  | `0` or `1`; exactly one `1` per MCQ (service)   |
+| SortOrder      | `sort_order`  | `0`–`5` display order                           |
+| AttemptId      | `attempt_id`  | Primary key                                     |
+| IsCorrectResult| `is_correct`  | Whether selected choice matched correct answer  |
+
+**D1 setup:**
+
+1. `npx wrangler d1 migrations create quizmaker-db create_mcq_tables`
+2. Paste SQL above into generated migration file
+3. Apply locally only: `npx wrangler d1 migrations apply quizmaker-db --local`
+
+### API Endpoints
+
+Primary mutations use **Server Actions**. Optional route handlers are listed for read clients.
+
+#### Server Actions (primary)
+
+| Action              | File                                      | Input                                                                 | Success result                         | Errors                                      |
+|---------------------|-------------------------------------------|-----------------------------------------------------------------------|----------------------------------------|---------------------------------------------|
+| `createMcq`         | `src/app/(app)/questions/new/actions.ts`  | `{ name, question, choices: [{ label, isCorrect }] }` (2–6 items) | Redirect to `/questions`               | 400 validation; 401 unauthenticated         |
+| `updateMcq`         | `src/app/(app)/questions/[mcqId]/edit/actions.ts` | Same shape + `mcqId`                                          | Redirect to `/questions`               | 400 validation; 403 not owner; 404 not found |
+| `deleteMcq`         | `src/app/(app)/questions/actions.ts`      | `{ mcqId }`                                                           | Revalidate list; success               | 403 not owner; 404 not found                  |
+| `recordAttempt`     | `src/app/(app)/questions/[mcqId]/preview/actions.ts` | `{ mcqId, choiceId }                                    | `{ isCorrect: boolean }`               | 400 invalid choice; 401 unauthenticated       |
+
+#### Route Handlers (secondary / optional)
+
+```
+#### GET /api/mcqs
+List all MCQs for the authenticated user (summary fields only).
+
+**Response:**
+- Success (200):
+```json
+{
+  "mcqs": [
+    {
+      "mcqId": "abc123",
+      "name": "Photosynthesis basics",
+      "question": "Which process do plants use to convert light energy?",
+      "createdBy": "user-abc",
+      "createdAt": "2026-09-08T10:00:00Z",
+      "updatedAt": "2026-09-08T10:00:00Z"
+    }
+  ]
+}
+```
+- Error (401): `{ "error": "Not authenticated" }`
+
+#### GET /api/mcqs/[mcqId]
+Returns MCQ with choices (no attempt data).
+
+**Response:**
+- Success (200):
+```json
+{
+  "mcqId": "abc123",
+  "name": "Photosynthesis basics",
+  "question": "Which process do plants use to convert light energy?",
+  "createdBy": "user-abc",
+  "choices": [
+    { "choiceId": "c1", "label": "Respiration", "isCorrect": false, "sortOrder": 0 },
+    { "choiceId": "c2", "label": "Photosynthesis", "isCorrect": true, "sortOrder": 1 }
+  ]
+}
+```
+- Error (404): `{ "error": "MCQ not found" }`
+```
+
+All route handlers validate with Zod and delegate to `McqService` — never to repositories directly.
+
+### User Interface Requirements
+
+All MCQ pages live under the protected `(app)` route group. Use existing Shadcn components (`button`, `table`, `card`, `input`, `label`, `field`, `dialog`) and add **`dropdown-menu`**, **`textarea`**, and **`alert-dialog`** via `npx shadcn@latest add`.
+
+#### Questions List Page (`/questions`)
+
+- Protected route (requires session)
+- Page header: title **Multiple Choice Questions** + primary **Create** `Button` → navigates to `/questions/new`
+- Shadcn `Table` columns:
+  - **Name** — `mcq.name`
+  - **Question** — truncated question text (e.g. max 120 chars with ellipsis)
+  - **Actions** — `DropdownMenu` trigger (icon button, e.g. `MoreHorizontal`) with:
+    - **Edit** → `/questions/[mcqId]/edit`
+    - **Preview** → `/questions/[mcqId]/preview`
+    - **Delete** → opens `AlertDialog` confirmation; on confirm calls `deleteMcq` Server Action
+- Empty state when no questions: message + **Create your first question** button
+- Add **Questions** link to `AuthNav` or app shell navigation
+
+#### Create Page (`/questions/new`)
+
+- Protected route
+- Form fields:
+  - **Name** — required, 3–120 characters (short label for the list table)
+  - **Question** — required, 10–2000 characters (`Textarea`; the actual MCQ prompt)
+  - **Choices** — dynamic list; **default 2** rows on load
+    - Each row: choice label (`Input`) + radio **Correct answer** (exactly one selected)
+    - **Add choice** button (disabled when 6 choices)
+    - **Remove** per row (disabled when only 2 choices remain)
+- Footer actions:
+  - **Save** — primary `Button`; submits `createMcq` Server Action
+  - **Cancel** — outline `Button`; link back to `/questions` (no save)
+- Field-level errors via existing `FieldError` pattern
+
+#### Edit Page (`/questions/[mcqId]/edit`)
+
+- Protected route; 404 if MCQ missing
+- Same form as Create, pre-filled from `McqService.getMcqWithChoices`
+- Only owner (`created_by === current user`) may edit; others receive 403 page or redirect with error
+- **Save** calls `updateMcq`; **Cancel** returns to `/questions`
+
+#### Preview Page (`/questions/[mcqId]/preview`)
+
+- Protected route; read-only name and question text
+- Lists choices as radio options (labels visible; `is_correct` hidden until after submit)
+- **Submit answer** button — calls `recordAttempt`; shows **Correct** or **Incorrect** feedback
+- **Back to list** link → `/questions`
+- Does not expose which choice is correct before submit
+
+#### Validation Rules (Zod — `src/lib/validators/mcq.ts`)
+
+```typescript
+const choiceInputSchema = z.object({
+  label: z.string().min(1, "Choice text is required").max(500),
+  isCorrect: z.boolean(),
+});
+
+export const mcqFormSchema = z
+  .object({
+    name: z.string().min(3).max(120),
+    question: z.string().min(10).max(2000),
+    choices: z.array(choiceInputSchema).min(2, "At least 2 choices required").max(6),
+  })
+  .refine((d) => d.choices.filter((c) => c.isCorrect).length === 1, {
+    message: "Exactly one choice must be marked correct",
+    path: ["choices"],
+  });
+
+export const recordAttemptSchema = z.object({
+  mcqId: z.string().min(1),
+  choiceId: z.string().min(1),
+});
+```
+
+---
+
+## Test-Driven Development Approach
+
+This feature follows the same TDD workflow established in the login PRD. Vitest harness already exists (`vitest.config.ts`, `src/test/mock-d1.ts`).
+
+### TDD Workflow (every phase)
+
+```
+1. Define test cases in this PRD phase plan
+2. Write failing unit tests (RED) — `npm run test` must show failures
+3. Implement minimal production code (GREEN)
+4. Refactor while keeping tests green
+5. Phase exit gate: all phase tests pass + mapped acceptance criteria met
+```
+
+### Unit Testing Conventions
+
+- **Colocate tests**: `mcq-service.ts` → `mcq-service.test.ts`
+- **Mock at boundaries**: mock D1 in repository tests; mock repositories in service tests; mock services in action tests
+- **Fixtures**: add `src/test/fixtures/mcqs.ts` for sample MCQ/choice/attempt rows
+- **Never hit real D1** in unit tests
+- **Client components only** in UI tests — list table menu, form, preview submit
+
+### Phase Completion Gate
+
+A phase is **COMPLETED** only when:
+
+1. All unit tests listed for that phase pass (`npm run test` — 0 failures)
+2. Mapped acceptance criteria are verified
+3. Phase status marker in this PRD is updated to `COMPLETED`
+
+### Acceptance Criteria ↔ Test Mapping
+
+| Acceptance criterion | Primary test file(s) |
+|----------------------|----------------------|
+| List page shows MCQs in table | `questions-table.test.tsx`, `mcq-service.test.ts` |
+| Create MCQ with 2–6 choices | `mcq-service.test.ts`, `new/actions.test.ts`, `mcq-form.test.tsx` |
+| Default 2 choices on create form | `mcq-form.test.tsx` |
+| Exactly one correct choice enforced | `mcq.test.ts`, `mcq-service.test.ts` |
+| Edit updates MCQ and replaces choices | `mcq-service.test.ts`, `edit/actions.test.ts` |
+| Non-owner cannot update/delete | `mcq-service.test.ts`, `*/actions.test.ts` |
+| Delete removes MCQ, choices, attempts | `mcq-repository.test.ts`, `mcq-service.test.ts` |
+| Preview records attempt with result | `mcq-service.test.ts`, `preview/actions.test.ts` |
+| Save/Cancel on form | `mcq-form.test.tsx` |
+| Row menu Edit / Preview / Delete | `questions-table.test.tsx` |
+| Zod validation before service | `mcq.test.ts`, `*/actions.test.ts` |
+| Layered architecture — no layer skipping | Controller tests mock services only |
+
+---
+
+## Implementation Phases
+
+### Phase 1: Database & Repository Layer - COMPLETED
+
+**Objective**: Add MCQ schema migration and data-access repositories with unit tests.
+
+**TDD order**: Write repository tests (RED) → implement repositories (GREEN).
+
+**Tasks**:
+1. Create migration `0002_create_mcq_tables.sql` and apply locally
+2. Add fixtures in `src/test/fixtures/mcqs.ts`
+3. Define types in `src/lib/types/mcq.ts` (`Mcq`, `Choice`, `Attempt`, `McqWithChoices`)
+4. **Write failing tests** in `mcq-repository.test.ts`, `choice-repository.test.ts`, `attempt-repository.test.ts`
+5. Implement repositories until tests pass
+
+**Unit Test Plan — `src/lib/repositories/mcq-repository.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `createMcq` with valid input | INSERT with bound params; returns `Mcq` row |
+| 2 | `findById` when exists | Returns mapped `Mcq` |
+| 3 | `findById` when missing | Returns `null` |
+| 4 | `listMcqs` | Returns all rows ordered by `updated_at DESC` |
+| 5 | `listMcqsByUser` | Filters by `created_by` |
+| 6 | `updateMcq` | Updates name, question, `updated_at` |
+| 7 | `deleteMcq` | Deletes row; returns success indicator |
+
+**Unit Test Plan — `src/lib/repositories/choice-repository.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `createChoices` batch | Inserts N rows with `sort_order` |
+| 2 | `findByMcqId` | Returns choices ordered by `sort_order` |
+| 3 | `deleteByMcqId` | Deletes all choices for MCQ |
+| 4 | `replaceChoicesForMcq` | Delete + insert in one operation |
+
+**Unit Test Plan — `src/lib/repositories/attempt-repository.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `createAttempt` | Inserts with `is_correct` 0 or 1 |
+| 2 | `findByMcqIdAndUser` | Returns attempts for user + MCQ |
+
+**Deliverables**:
+- `migrations/0002_create_mcq_tables.sql`
+- `src/lib/types/mcq.ts`
+- `src/lib/repositories/mcq-repository.ts` + `.test.ts`
+- `src/lib/repositories/choice-repository.ts` + `.test.ts`
+- `src/lib/repositories/attempt-repository.ts` + `.test.ts`
+- `src/test/fixtures/mcqs.ts`
+
+**Phase exit gate**: All repository tests green; migration applies locally.
+
+### Phase 2: Service Layer & Validators - PLANNED
+
+**Objective**: Implement `McqService` business rules and Zod validators.
+
+**TDD order**: Validator tests (RED) → validators (GREEN) → service tests with mocked repos (RED) → `McqService` (GREEN).
+
+**Tasks**:
+1. **Write failing tests** in `mcq.test.ts` (validators)
+2. Implement `src/lib/validators/mcq.ts`
+3. **Write failing tests** in `mcq-service.test.ts`
+4. Implement `src/lib/services/mcq-service.ts`
+
+**Unit Test Plan — `src/lib/validators/mcq.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Valid MCQ with 2 choices, one correct | Parses successfully |
+| 2 | 1 choice only | Fails |
+| 3 | 7 choices | Fails |
+| 4 | Zero correct choices | Fails refine |
+| 5 | Two correct choices | Fails refine |
+| 6 | Empty choice label | Fails |
+
+**Unit Test Plan — `src/lib/services/mcq-service.test.ts`**
+
+Mock all three repositories.
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `createMcq` valid input | Creates MCQ + choices; returns `McqWithChoices` |
+| 2 | `createMcq` invalid choice count | Throws `VALIDATION` |
+| 3 | `createMcq` not exactly one correct | Throws `VALIDATION` |
+| 4 | `getMcqWithChoices` exists | Returns MCQ + ordered choices |
+| 5 | `getMcqWithChoices` missing | Throws `NOT_FOUND` |
+| 6 | `listMcqs` | Returns summary list |
+| 7 | `updateMcq` as owner | Updates MCQ; replaces choices |
+| 8 | `updateMcq` as non-owner | Throws `FORBIDDEN` |
+| 9 | `deleteMcq` as owner | Deletes MCQ (cascade choices/attempts via FK or explicit) |
+| 10 | `deleteMcq` as non-owner | Throws `FORBIDDEN` |
+| 11 | `recordAttempt` correct choice | `is_correct: true` persisted |
+| 12 | `recordAttempt` wrong choice | `is_correct: false` persisted |
+| 13 | `recordAttempt` choice not belonging to MCQ | Throws `VALIDATION` |
+
+**Deliverables**:
+- `src/lib/validators/mcq.ts` + `.test.ts`
+- `src/lib/services/mcq-service.ts` + `.test.ts`
+
+**Phase exit gate**: Validator + service tests green.
+
+### Phase 3: Controller Layer (Server Actions) - PLANNED
+
+**Objective**: Wire Server Actions to `McqService`; protect mutations with `getCurrentUser()`.
+
+**TDD order**: Action tests with mocked service (RED) → implement actions (GREEN).
+
+**Tasks**:
+1. **Write failing tests** for `new/actions.test.ts`, `edit/actions.test.ts`, `questions/actions.test.ts`, `preview/actions.test.ts`
+2. Implement Server Actions
+3. Optionally add `GET /api/mcqs` and `GET /api/mcqs/[mcqId]` + route tests
+4. Extend `src/middleware.ts` / route guard so `/questions` paths require auth (should already be covered by `(app)` group)
+
+**Unit Test Plan — `src/app/(app)/questions/new/actions.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Unauthenticated | Returns auth error; no service call |
+| 2 | Invalid Zod input | Returns field errors |
+| 3 | Valid input | Calls `mcqService.createMcq`; redirects to `/questions` |
+
+**Unit Test Plan — `src/app/(app)/questions/[mcqId]/edit/actions.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Unauthenticated | Auth error |
+| 2 | Valid update as owner | Calls `updateMcq`; redirects |
+| 3 | Service throws FORBIDDEN | Returns user-facing error |
+
+**Unit Test Plan — `src/app/(app)/questions/actions.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | `deleteMcq` valid | Calls service; revalidates path |
+| 2 | `deleteMcq` not owner | Returns error |
+
+**Unit Test Plan — `src/app/(app)/questions/[mcqId]/preview/actions.test.ts`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Valid attempt | Returns `{ isCorrect }` |
+| 2 | Invalid choiceId | Validation error |
+
+**Deliverables**:
+- Action files + `.test.ts` (all green)
+- Optional API routes
+
+**Phase exit gate**: All controller tests green.
+
+### Phase 4: UI Pages & Components - PLANNED
+
+**Objective**: Build Shadcn-based list, form, preview, and navigation.
+
+**TDD order**: Component tests (RED) → components (GREEN) → page shells.
+
+**Tasks**:
+1. Add Shadcn components: `dropdown-menu`, `textarea`, `alert-dialog`
+2. **Write failing tests** for `questions-table.test.tsx`, `mcq-form.test.tsx`, `mcq-preview.test.tsx`
+3. Implement components until tests pass
+4. Build pages: `questions/page.tsx`, `questions/new/page.tsx`, `questions/[mcqId]/edit/page.tsx`, `questions/[mcqId]/preview/page.tsx`
+5. Add **Questions** nav link in app shell / `AuthNav`
+6. Update dashboard stub to link to `/questions`
+
+**Unit Test Plan — `src/components/mcq/questions-table.test.tsx`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Renders name and question columns | Data visible |
+| 2 | Create button links to `/questions/new` | href correct |
+| 3 | Row menu opens with Edit, Preview, Delete | All three options present |
+| 4 | Edit navigates to edit URL | Correct `mcqId` in path |
+| 5 | Delete opens confirmation dialog | AlertDialog visible |
+| 6 | Empty state shows create CTA | Message + button |
+
+**Unit Test Plan — `src/components/mcq/mcq-form.test.tsx`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Renders with 2 default choice rows | Two label inputs |
+| 2 | Add choice increases rows up to 6 | Sixth add disabled |
+| 3 | Remove choice blocked at 2 | Remove disabled |
+| 4 | Save submits action | Calls create/update action |
+| 5 | Cancel links to `/questions` | No submit |
+
+**Unit Test Plan — `src/components/mcq/mcq-preview.test.tsx`**
+
+| # | Test case | Expected behavior |
+|---|-----------|-------------------|
+| 1 | Shows question without revealing correct answer | No correct badge pre-submit |
+| 2 | Submit calls `recordAttempt` | Action invoked with choiceId |
+| 3 | Shows correct/incorrect after response | Feedback visible |
+
+**Deliverables**:
+- `src/components/mcq/*.tsx` + `.test.tsx`
+- Page shells under `src/app/(app)/questions/`
+- Navigation updates
+
+**Phase exit gate**: Component tests green; pages render in dev.
+
+### Phase 5: Suite Verification & Acceptance Sign-Off - PLANNED
+
+**Objective**: Full green suite, preview smoke test, PRD sign-off.
+
+**Tasks**:
+1. Run `npm run test` — 0 failures
+2. Walk acceptance criteria mapping; mark complete when tests pass
+3. Update `src/test/suite.test.ts` inventory for new test files
+4. `npm run preview` smoke: login → create MCQ → list → edit → preview attempt → delete
+5. Document issues in Troubleshooting
+
+**Phase exit gate**: All acceptance criteria checked; preview smoke verified.
+
+---
+
+## Technical Implementation Details
+
+### Layered Architecture Mapping
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Controller                                                  │
+│  Server Actions, optional Route Handlers                     │
+│  src/app/(app)/questions/**/actions.ts                       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  Service                                                     │
+│  McqService — validation, ownership, choice rules           │
+│  src/lib/services/mcq-service.ts                             │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  Repository                                                  │
+│  mcq-repository, choice-repository, attempt-repository       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  Database — Cloudflare D1                                    │
+│  migrations/0002_create_mcq_tables.sql                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Rules** (same as auth feature):
+- Controllers never import repositories directly
+- Repositories contain no business logic (no "exactly one correct" check in SQL)
+- Services never read cookies; controllers pass `userId` from `getCurrentUser()`
+- Use numbered D1 placeholders (`?1`, `?2`, …)
+
+### Key Files
+
+| Path | Purpose |
+|------|---------|
+| `migrations/0002_create_mcq_tables.sql` | MCQ, choices, attempts schema |
+| `src/lib/types/mcq.ts` | Domain types |
+| `src/lib/repositories/mcq-repository.ts` | MCQ CRUD |
+| `src/lib/repositories/choice-repository.ts` | Choice CRUD per MCQ |
+| `src/lib/repositories/attempt-repository.ts` | Attempt inserts/queries |
+| `src/lib/services/mcq-service.ts` | Business logic |
+| `src/lib/validators/mcq.ts` | Zod schemas |
+| `src/app/(app)/questions/page.tsx` | List table + Create button |
+| `src/app/(app)/questions/new/page.tsx` | Create form |
+| `src/app/(app)/questions/[mcqId]/edit/page.tsx` | Edit form |
+| `src/app/(app)/questions/[mcqId]/preview/page.tsx` | Preview + attempt |
+| `src/components/mcq/questions-table.tsx` | Table + dropdown menu |
+| `src/components/mcq/mcq-form.tsx` | Shared create/edit form |
+| `src/components/mcq/mcq-preview.tsx` | Preview + submit answer |
+| `src/test/fixtures/mcqs.ts` | Test fixtures |
+
+### Implementation Patterns
+
+**Service — create MCQ with choices:**
+
+```typescript
+// src/lib/services/mcq-service.ts
+export async function createMcq(
+  db: D1Database,
+  userId: string,
+  input: McqFormInput,
+): Promise<McqWithChoices> {
+  // Zod already ran in controller; enforce 2–6 + one correct again for defense in depth
+  assertValidChoices(input.choices);
+
+  const mcq = await mcqRepo.createMcq(db, {
+    name: input.name,
+    question: input.question,
+    createdBy: userId,
+  });
+
+  const choices = await choiceRepo.createChoices(db, mcq.mcqId, input.choices);
+  return { ...mcq, choices };
+}
+```
+
+**Controller — create with auth:**
+
+```typescript
+// src/app/(app)/questions/new/actions.ts
+"use server";
+
+import { redirect } from "next/navigation";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { getCurrentUser } from "@/lib/auth/get-current-user";
+import { mcqFormSchema } from "@/lib/validators/mcq";
+import * as mcqService from "@/lib/services/mcq-service";
+
+export async function createMcq(formData: FormData) {
+  const user = await getCurrentUser();
+  if (!user) return { error: "Not authenticated" };
+
+  const parsed = mcqFormSchema.safeParse(parseMcqFormData(formData));
+  if (!parsed.success) return { errors: parsed.error.flatten().fieldErrors };
+
+  const { env } = await getCloudflareContext();
+  await mcqService.createMcq(env.DB, user.userId, parsed.data);
+  redirect("/questions");
+}
+```
+
+**Replace choices on update (transactional pattern):**
+
+```typescript
+// In mcq-service updateMcq:
+await assertOwner(db, mcqId, userId);
+await mcqRepo.updateMcq(db, mcqId, { name, question });
+await choiceRepo.replaceChoicesForMcq(db, mcqId, choices);
+```
+
+### Important Notes
+
+- **Choice replacement on edit**: Delete all existing choices for the MCQ and insert new rows (simpler than per-row diff); `attempt.choice_id` FK may require `ON DELETE CASCADE` on choices (already set) — old attempts remain valid only if choice IDs unchanged; for phase 1, replacing choices invalidates old attempt FK references — acceptable for practice attempts, or delete attempts on update (document choice in implementation)
+- **Shadcn**: Install missing UI primitives before Phase 4 (`dropdown-menu`, `textarea`, `alert-dialog`)
+- **Navigation**: Add `/questions` to protected routes; unauthenticated access redirects to `/login`
+- **TDD mandatory**: red → green per phase; do not skip repository tests
+- Run `npm run preview` before marking feature complete
+
+---
+
+## Acceptance Criteria
+
+Each criterion must pass its mapped unit tests before being checked off.
+
+- [ ] Authenticated teacher sees `/questions` table with name and question columns
+- [ ] **Create** button navigates to `/questions/new`
+- [ ] Teacher can create an MCQ with name, question, and 2–6 choices (default 2 on form); `created_by` set to authenticated user
+- [ ] Exactly one choice must be marked correct; validation error otherwise
+- [ ] **Save** persists MCQ and choices; redirects to list
+- [ ] **Cancel** returns to list without saving
+- [ ] Row menu shows **Edit**, **Preview**, **Delete**
+- [ ] **Edit** loads existing data; **Save** updates MCQ and choices
+- [ ] Non-owner cannot edit or delete another user's MCQ
+- [ ] **Delete** shows confirmation; removes MCQ and related choices/attempts
+- [ ] **Preview** shows question read-only; submit records attempt with correct/incorrect result
+- [ ] All Server Action inputs validated with Zod before service layer
+- [ ] Architecture follows Controller → Service → Repository → Database
+- [ ] UI uses Shadcn components (`Button`, `Table`, `DropdownMenu`, `Dialog`/`AlertDialog`, `Input`, `Textarea`)
+
+---
+
+## Success Metrics
+
+| Metric | Target | How Measured |
+|--------|--------|--------------|
+| Unit test pass rate | 100% before sign-off | `npm run test` exit code 0 |
+| MCQ create flow | < 2 minutes average | Manual preview timing |
+| Choice validation | 100% reject invalid forms | `mcq.test.ts`, `mcq-service.test.ts` |
+| Attempt accuracy | Stored result matches selected choice | `mcq-service.test.ts`, `attempt-repository.test.ts` |
+| List page load | < 1s local for < 100 rows | Preview devtools |
+
+---
+
+## Dependencies
+
+### External Dependencies
+
+- **Cloudflare D1** — MCQ, choices, attempts storage (existing `DB` binding)
+- **Cloudflare Workers runtime** — `@opennextjs/cloudflare`
+
+### Internal Dependencies
+
+- **Auth feature (completed)** — `getCurrentUser()`, sessions, `users` table FK for `created_by`
+- **Vitest + Testing Library** — existing test harness
+- **shadcn/ui** — `button`, `table`, `card`, `input`, `label`, `field`, `dialog`; add `dropdown-menu`, `textarea`, `alert-dialog`
+- **Zod** — already in project
+- **Lucide icons** — menu trigger (`MoreHorizontal`), add/remove choice icons
+
+### Environment Variables
+
+No new environment variables required beyond existing `SESSION_SECRET`.
+
+---
+
+## Risks and Mitigation
+
+### Technical Risks
+
+- **Risk**: Updating choices breaks attempt FK references
+- **Mitigation**: Cascade delete attempts when replacing choices on edit, or use soft-replace strategy documented in service; test in `mcq-service.test.ts`
+
+- **Risk**: Concurrent edit of same MCQ
+- **Mitigation**: Last-write-wins for phase 1; optimistic locking out of scope
+
+### User Experience Risks
+
+- **Risk**: Teachers forget to mark correct answer
+- **Mitigation**: Zod refine + inline error "Exactly one choice must be marked correct"
+
+- **Risk**: Accidental delete
+- **Mitigation**: `AlertDialog` with explicit Confirm/Cancel
+
+---
+
+## Troubleshooting Guide
+
+### Migration fails: foreign key to users
+
+**Problem**: `mcqs` migration fails on fresh DB without users migration
+**Cause**: `0001_create_users_and_sessions.sql` not applied
+**Solution**: Apply migrations in order locally: `npx wrangler d1 migrations apply quizmaker-db --local`
+
+### Dropdown menu not installed
+
+**Problem**: `Cannot find module '@/components/ui/dropdown-menu'`
+**Cause**: Shadcn component not added
+**Solution**: `npx shadcn@latest add dropdown-menu textarea alert-dialog`
+
+### Choice count validation mismatch
+
+**Problem**: Form submits 1 or 7 choices
+**Cause**: Client allows invalid state
+**Solution**: Disable add/remove at bounds in `mcq-form.tsx`; Zod enforces server-side
+
+---
+
+## Notes for AI Agents
+
+When working with this PRD:
+
+1. Read Overview and Hypothesis first — this builds on completed auth (`register-login&logout-prd`)
+2. Use Scope boundaries — no quiz assembly or sharing in this phase
+3. **Follow TDD**: failing tests first, then implementation
+4. Strict layering: Controllers → `McqService` → Repositories → D1
+5. Reuse patterns from `user-service.ts`, `user-repository.ts`, and auth Server Actions
+6. Add `src/test/fixtures/mcqs.ts` early in Phase 1
+7. Install Shadcn components before Phase 4 UI work
+8. Update phase status markers as exit gates pass
+9. Never apply D1 migrations with `--remote` unless user explicitly requests
+10. Use numbered placeholders in all D1 queries
+11. Mark acceptance criteria only when mapped tests pass
+
+---
+
+## Current Status
+
+**Last Updated**: 2026-09-09
+**Current Phase**: Phase 2 - Service Layer & Validators
+**Status**: IN PROGRESS — Phase 1 complete (migration, types, repositories, 13 repository tests)
+**Test Suite Status**: Auth baseline + 13 MCQ repository tests
+**Next Steps**: Implement Zod validators and `McqService` with unit tests (Phase 2)
