@@ -6,13 +6,19 @@ export const passwordSchema = z
 	.regex(/[a-zA-Z]/, "Password must contain a letter")
 	.regex(/[0-9]/, "Password must contain a number");
 
+export const usernameSchema = z
+	.string()
+	.trim()
+	.min(3, "Username must be at least 3 characters")
+	.max(30, "Username must be at most 30 characters")
+	.regex(
+		/^[a-zA-Z0-9 _-]+$/,
+		"Username can only contain letters, numbers, spaces, underscores, and hyphens",
+	);
+
 export const registerSchema = z
 	.object({
-		username: z
-			.string()
-			.min(3, "Username must be at least 3 characters")
-			.max(30, "Username must be at most 30 characters")
-			.regex(/^[a-zA-Z0-9_-]+$/, "Username contains invalid characters"),
+		username: usernameSchema,
 		emailId: z.string().email("Invalid email address"),
 		password: passwordSchema,
 		confirmPassword: z.string(),
@@ -29,12 +35,7 @@ export const loginSchema = z.object({
 
 export const updateUserSchema = z
 	.object({
-		username: z
-			.string()
-			.min(3, "Username must be at least 3 characters")
-			.max(30, "Username must be at most 30 characters")
-			.regex(/^[a-zA-Z0-9_-]+$/, "Username contains invalid characters")
-			.optional(),
+		username: usernameSchema.optional(),
 		emailId: z.string().email("Invalid email address").optional(),
 		currentPassword: z.string().optional(),
 		newPassword: passwordSchema.optional(),

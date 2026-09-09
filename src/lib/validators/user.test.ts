@@ -19,6 +19,20 @@ describe("user validators", () => {
 		expect(result.success).toBe(true);
 	});
 
+	it("registerSchema allows usernames with spaces", () => {
+		const result = registerSchema.safeParse({
+			username: "Sai Charan",
+			emailId: "sai267@gmail.com",
+			password: "Password1",
+			confirmPassword: "Password1",
+		});
+
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.username).toBe("Sai Charan");
+		}
+	});
+
 	it("registerSchema fails when passwords do not match", () => {
 		const result = registerSchema.safeParse({
 			username: "jdoe",

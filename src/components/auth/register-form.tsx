@@ -41,6 +41,7 @@ export function RegisterForm() {
 								id="username"
 								name="username"
 								autoComplete="username"
+								placeholder="e.g. Sai Charan"
 								required
 							/>
 							<FieldError
